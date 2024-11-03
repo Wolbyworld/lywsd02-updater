@@ -1,5 +1,7 @@
 # LYWSD02 Updater
 
+Based on the original code of this [repo](https://saso5.github.io/LYWSD02-clock-sync/)
+
 ## Table of Contents
 
 - [Overview](#overview)
