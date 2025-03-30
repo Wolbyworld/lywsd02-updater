@@ -34,7 +34,7 @@ class LYWSD02SyncApp:
 
         ttk.Label(search_frame, text="Search Devices:").pack(side="left", padx=5)
         self.search_var = tk.StringVar()
-        self.search_var.trace("w", lambda name, index, mode: self.filter_devices())
+        self.search_var.trace_add("write", lambda name, index, mode: self.filter_devices())
         self.search_entry = ttk.Entry(search_frame, textvariable=self.search_var)
         self.search_entry.pack(side="left", fill="x", expand=True, padx=5)
 
@@ -68,8 +68,18 @@ class LYWSD02SyncApp:
         lywsd02_frame = ttk.LabelFrame(devices_container, text="LYWSD02 Devices")
         lywsd02_frame.pack(side="left", fill="both", expand=True, padx=(0, 5), pady=5)
 
+        # Add target device note
+        target_note = ttk.Label(lywsd02_frame, text="Target Device: LYWSD02 [67716109-3586-4F60-7F81-7FE430D7B634]", 
+                              foreground="blue", font=("Helvetica", 9, "bold"))
+        target_note.pack(pady=(5,0))
+
         self.lywsd02_listbox = tk.Listbox(lywsd02_frame, height=10)
         self.lywsd02_listbox.pack(fill="both", expand=True, padx=5, pady=5)
+
+        # Add a note about target device
+        target_info = ttk.Label(lywsd02_frame, text="(This is the main device to update)", 
+                              foreground="gray", font=("Helvetica", 8))
+        target_info.pack(pady=(0,5))
 
         # Frame for Other Devices
         other_frame = ttk.LabelFrame(devices_container, text="Other Bluetooth Devices")
@@ -178,15 +188,13 @@ class LYWSD02SyncApp:
 
             # Get service UUIDs from advertisement data
             service_uuids = device.metadata.get('uuids', [])
-            # service_uuids_str = ", ".join(service_uuids) if service_uuids else "None"  # Removed UUIDs from display
 
             # Determine if the address is a MAC or UUID based on platform
-            # macOS uses UUIDs as addresses, others use MAC addresses
             if sys.platform == "darwin":
-                identifier = mac  # On macOS, device.address is a UUID
+                identifier = mac
                 address_type = "UUID"
             else:
-                identifier = mac  # On Windows/Linux, device.address is a MAC
+                identifier = mac
                 address_type = "MAC"
 
             # Log the discovered device with its type
@@ -196,12 +204,15 @@ class LYWSD02SyncApp:
                 self.all_devices[identifier] = {
                     'name': name,
                     'address': mac,
-                    # 'uuids': service_uuids_str  # Removed UUIDs from storage as they are not displayed
                 }
 
                 if "LYWSD02" in name:
                     self.lywsd02_devices[identifier] = self.all_devices[identifier]
-                    display_text = f"{name} [{mac}]"
+                    # Add special formatting for target device
+                    if mac == "67716109-3586-4F60-7F81-7FE430D7B634":
+                        display_text = f"🎯 {name} [{mac}]"
+                    else:
+                        display_text = f"{name} [{mac}]"
                     self.lywsd02_listbox.insert(tk.END, display_text)
                     self.log(f"Discovered LYWSD02 Device: {name} [{mac}]")
                 else:
