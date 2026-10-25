@@ -1,8 +1,11 @@
 import asyncio
-import threading
 import struct
 import time
 import sys
+import json
+import socket
+from pathlib import Path
+from uuid import UUID
 import tkinter as tk
 from tkinter import ttk, messagebox
 from bleak import BleakScanner, BleakClient
@@ -13,10 +16,32 @@ TIME_SERVICE_UUID = 'ebe0ccb0-7a0a-4b0c-8a1a-6ff2997da3a6'
 TIME_CHAR_UUID = 'ebe0ccb7-7a0a-4b0c-8a1a-6ff2997da3a6'
 UNIT_CHAR_UUID = 'ebe0ccbe-7a0a-4b0c-8a1a-6ff2997da3a6'
 
+def load_target_identifier(config_path=None, hostname=None):
+    """Load an optional, private target marker for the current computer.
+
+    CoreBluetooth identifiers are scoped to a Mac. This is only a visual marker;
+    it never selects a device or starts a clock update.
+    """
+    path = Path(config_path) if config_path is not None else Path(__file__).with_name("devices.local.json")
+    host = (hostname or socket.gethostname()).split(".", 1)[0].lower()
+    try:
+        config = json.loads(path.read_text())
+        identifier = config.get("targets", {}).get(host)
+        if identifier is None:
+            return None
+        return str(UUID(identifier)).upper()
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError, TypeError, AttributeError):
+        print("Invalid local target configuration; target marker disabled.", file=sys.stderr)
+        return None
+
+
 class LYWSD02SyncApp:
     def __init__(self, root):
         self.root = root
         self.root.title("LYWSD02 Clock Sync")
+        self.target_identifier = load_target_identifier()
         self.create_widgets()
         self.all_devices = {}  # Key: MAC or UUID, Value: Device Info
         self.lywsd02_devices = {}
@@ -24,7 +49,12 @@ class LYWSD02SyncApp:
         self.scanning = False
         self.client = None
         self.loop = asyncio.new_event_loop()
-        threading.Thread(target=self.start_loop, daemon=True).start()
+        asyncio.set_event_loop(self.loop)
+        self._closing = False
+        self.root.protocol("WM_DELETE_WINDOW", self.close_app)
+        # Tk on macOS must only be touched by the main thread. Run short
+        # asyncio iterations from Tk so BLE callbacks and all widgets share it.
+        self.root.after(10, self.start_loop)
         self.update_current_time()
 
     def create_widgets(self):
@@ -68,8 +98,10 @@ class LYWSD02SyncApp:
         lywsd02_frame = ttk.LabelFrame(devices_container, text="LYWSD02 Devices")
         lywsd02_frame.pack(side="left", fill="both", expand=True, padx=(0, 5), pady=5)
 
-        # Add target device note
-        target_note = ttk.Label(lywsd02_frame, text="Target Device: LYWSD02 [67716109-3586-4F60-7F81-7FE430D7B634]", 
+        # A configured target is a hint, not evidence of a current discovery.
+        target_text = (f"Configured target: LYWSD02 [{self.target_identifier}]"
+                       if self.target_identifier else "No target configured; verify device identity before updating.")
+        target_note = ttk.Label(lywsd02_frame, text=target_text,
                               foreground="blue", font=("Helvetica", 9, "bold"))
         target_note.pack(pady=(5,0))
 
@@ -77,7 +109,7 @@ class LYWSD02SyncApp:
         self.lywsd02_listbox.pack(fill="both", expand=True, padx=5, pady=5)
 
         # Add a note about target device
-        target_info = ttk.Label(lywsd02_frame, text="(This is the main device to update)", 
+        target_info = ttk.Label(lywsd02_frame, text="(The configured target may be offline or have a different identifier on another Mac)",
                               foreground="gray", font=("Helvetica", 8))
         target_info.pack(pady=(0,5))
 
@@ -98,13 +130,16 @@ class LYWSD02SyncApp:
 
         # Time Zone Entry
         ttk.Label(time_frame, text="Time Zone (UTC offset):").grid(row=1, column=0, sticky="w", padx=5, pady=2)
-        self.time_zone_var = tk.IntVar(value=0)
+        # Default to the machine's current local UTC offset (DST-aware), e.g. +2 for Madrid in summer
+        local_gmtoff = time.localtime().tm_gmtoff or 0
+        local_hours, local_remainder = divmod(local_gmtoff, 3600)
+        self.time_zone_var = tk.IntVar(value=int(local_hours))
         self.time_zone_entry = ttk.Entry(time_frame, textvariable=self.time_zone_var, width=5)
         self.time_zone_entry.grid(row=1, column=1, sticky="w", padx=5, pady=2)
         ttk.Label(time_frame, text="(Range: -12 to +14)").grid(row=1, column=2, sticky="w")
 
         # Add 30-Minute Offset Checkbox
-        self.offset_30min_var = tk.BooleanVar()
+        self.offset_30min_var = tk.BooleanVar(value=local_remainder == 1800)
         self.offset_30min_check = ttk.Checkbutton(time_frame, text="Add 30-Minute Offset", variable=self.offset_30min_var)
         self.offset_30min_check.grid(row=2, column=0, columnspan=2, sticky="w", padx=5, pady=2)
 
@@ -130,10 +165,27 @@ class LYWSD02SyncApp:
         self.console_text.pack(fill="both", expand=True, padx=5, pady=5)
 
     def start_loop(self):
-        asyncio.set_event_loop(self.loop)
+        if self._closing:
+            return
+        self.loop.call_soon(self.loop.stop)
         self.loop.run_forever()
+        if not self._closing:
+            self.root.after(10, self.start_loop)
+
+    def close_app(self):
+        self._closing = True
+        self.scanning = False
+        pending = asyncio.all_tasks(self.loop)
+        for task in pending:
+            task.cancel()
+        if pending and not self.loop.is_running():
+            self.loop.run_until_complete(asyncio.wait(pending, timeout=3))
+        if not self.loop.is_running():
+            self.loop.close()
+        self.root.destroy()
 
     def log(self, message):
+        print(message, flush=True)
         self.console_text.config(state='normal')
         self.console_text.insert(tk.END, f"{message}\n")
         self.console_text.see(tk.END)
@@ -149,7 +201,7 @@ class LYWSD02SyncApp:
                 self.log(f"Starting scan for {duration} seconds...")
             else:
                 self.log("Starting continuous scan...")
-            asyncio.run_coroutine_threadsafe(self.perform_scan(duration=duration), self.loop)
+            self.loop.create_task(self.perform_scan(duration=duration))
 
     def stop_scan(self):
         if self.scanning:
@@ -162,16 +214,16 @@ class LYWSD02SyncApp:
     async def perform_scan(self, duration=None):
         try:
             if duration:
-                devices = await BleakScanner.discover(timeout=duration)
+                devices = await BleakScanner.discover(timeout=duration, return_adv=True)
                 await self.process_devices(devices)
                 self.scanning = False
                 self.scan_10s_button.config(state='normal')
                 self.scan_continuous_button.config(state='normal')
                 self.stop_scan_button.config(state='disabled')
-                self.log(f"Completed {duration}-second scan.")
+                self.log(f"Completed {duration}-second scan. Found {len(devices)} device(s) total.")
             else:
                 while self.scanning:
-                    devices = await BleakScanner.discover(timeout=5.0)
+                    devices = await BleakScanner.discover(timeout=5.0, return_adv=True)
                     await self.process_devices(devices)
                     await asyncio.sleep(1)  # Small delay to prevent tight loop
         except Exception as e:
@@ -182,12 +234,20 @@ class LYWSD02SyncApp:
             self.stop_scan_button.config(state='disabled')
 
     async def process_devices(self, devices):
-        for device in devices:
+        # bleak >=0.20 with return_adv=True yields {address: (BLEDevice, AdvertisementData)}
+        for device, adv in devices.values():
             mac = device.address.upper()
-            name = device.name if device.name else "Unknown"
+            # In bleak 3.x device.name is often None; the name comes via the advertisement
+            name = (adv.local_name if adv and adv.local_name else None) or device.name or "Unknown"
 
-            # Get service UUIDs from advertisement data
-            service_uuids = device.metadata.get('uuids', [])
+            # Collect advertised service UUIDs / service-data keys (lowercased)
+            adv_uuids = set()
+            if adv:
+                adv_uuids.update(u.lower() for u in (adv.service_uuids or []))
+                adv_uuids.update(k.lower() for k in (adv.service_data or {}).keys())
+            # Xiaomi/Mijia BLE service used by Mi Home for these sensors/clocks
+            XIAOMI_SERVICE = "0000fe95-0000-1000-8000-00805f9b34fb"
+            is_clock = ("lywsd" in name.lower()) or (XIAOMI_SERVICE in adv_uuids)
 
             # Determine if the address is a MAC or UUID based on platform
             if sys.platform == "darwin":
@@ -206,10 +266,10 @@ class LYWSD02SyncApp:
                     'address': mac,
                 }
 
-                if "LYWSD02" in name:
+                if is_clock:
                     self.lywsd02_devices[identifier] = self.all_devices[identifier]
-                    # Add special formatting for target device
-                    if mac == "67716109-3586-4F60-7F81-7FE430D7B634":
+                    # Mark a configured target only after it has been discovered.
+                    if mac == self.target_identifier:
                         display_text = f"🎯 {name} [{mac}]"
                     else:
                         display_text = f"{name} [{mac}]"
@@ -248,20 +308,15 @@ class LYWSD02SyncApp:
                 self.other_listbox.insert(tk.END, display_text)
 
     def get_selected_device(self):
-        # Check LYWSD02 listbox first
-        selected_indices = self.lywsd02_listbox.curselection()
-        if selected_indices:
-            index = selected_indices[0]
-            device_info = list(self.lywsd02_devices.values())[index]
-            return device_info
-
-        # Check Other devices listbox
-        selected_indices = self.other_listbox.curselection()
-        if selected_indices:
-            index = selected_indices[0]
-            device_info = list(self.other_devices.values())[index]
-            return device_info
-
+        # Resolve the selected visible identifier, including after filtering.
+        # A list index into the unfiltered dictionary can select another clock.
+        for listbox, devices in ((self.lywsd02_listbox, self.lywsd02_devices),
+                                 (self.other_listbox, self.other_devices)):
+            selected = listbox.curselection()
+            if selected:
+                visible = listbox.get(selected[0])
+                identifier = visible.rsplit("[", 1)[-1].rstrip("]").upper()
+                return devices.get(identifier)
         return None
 
     def update_device(self):
@@ -280,7 +335,7 @@ class LYWSD02SyncApp:
             self.stop_scan_button.config(state='disabled')
             self.log("Scanning stopped for device update.")
 
-        asyncio.run_coroutine_threadsafe(self.perform_update(device), self.loop)
+        self.loop.create_task(self.perform_update(device))
 
     async def perform_update(self, device):
         try:
@@ -314,7 +369,7 @@ class LYWSD02SyncApp:
                 unit = self.unit_var.get()
                 unit_value = 0 if unit == 'C' else 1
                 self.log(f"Updating temperature unit to {'Celsius (C)' if unit == 'C' else 'Fahrenheit (F)'}.")
-                
+
                 try:
                     # Read current unit
                     unit_data = await client.read_gatt_char(UNIT_CHAR_UUID)
@@ -371,11 +426,11 @@ class LYWSD02SyncApp:
     def update_current_time(self):
         try:
             # Get the current UTC time
-            utc_now = datetime.datetime.utcnow()
-            
+            utc_now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+
             # Retrieve the UTC offset from the user input
             tz_offset = self.time_zone_var.get()
-            
+
             # Validate the UTC offset
             if tz_offset < -12 or tz_offset > 14:
                 display_offset = "Invalid UTC Offset"
@@ -390,16 +445,16 @@ class LYWSD02SyncApp:
                 # Format the display string for UTC offset
                 sign = "+" if tz_offset >= 0 else "-"
                 display_offset = f"UTC{sign}{abs(tz_offset):02}:{offset_minutes:02}"
-            
+
             # Format the adjusted time as a string
             current_time = adjusted_time.strftime('%Y-%m-%d %H:%M:%S')
-            
+
             # Update the label with the adjusted time and UTC offset
             self.current_time_label.config(text=f"Current Time: {current_time} ({display_offset})")
         except Exception as e:
             # Handle any unexpected errors
             self.current_time_label.config(text=f"Current Time: Error ({e})")
-        
+
         # Schedule the update to occur every second
         self.root.after(1000, self.update_current_time)
 def main():

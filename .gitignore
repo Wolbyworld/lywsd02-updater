@@ -1,0 +1,14 @@
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.log
+devices.local.json
+devices.json
+LAST-SYNC.txt
+README-AIR.txt
+REPAIR-*.txt
+*.before-*
+requirements-air.txt
+requirements-original.txt
+launch-air.command

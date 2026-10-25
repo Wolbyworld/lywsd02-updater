@@ -2,6 +2,14 @@
 
 Based on the original code of this [repo](https://saso5.github.io/LYWSD02-clock-sync/)
 
+## Per-computer target marker
+
+macOS exposes CoreBluetooth UUIDs instead of Bluetooth MAC addresses. Keep a separate, verified target mapping for each Mac; an identifier from another Mac may not match.
+
+Copy `devices.example.json` to `devices.local.json`, replace `your-mac-hostname` with the computer's short hostname (`hostname -s`), and enter the UUID after confirming the physical clock's identity. `devices.local.json` is ignored by Git. The marker never selects a device or starts an update, and the configured target text does not mean the device was detected.
+
+The app defaults to the computer's current UTC offset, including daylight saving time. Check the offset and temperature unit before updating. A successful write message is not a time readback; check the clock's display afterward.
+
 ## Table of Contents
 
 - [Overview](#overview)
@@ -52,7 +60,7 @@ Based on the original code of this [repo](https://saso5.github.io/LYWSD02-clock-
 Before installing and running the application, ensure that your system meets the following requirements:
 
 - **Operating System:** Windows, macOS, or Linux
-- **Python Version:** Python 3.7 or higher
+- **Python Version:** Python 3.10 or higher (tested with Python 3.12)
 - **Bluetooth Adapter:** Required for Bluetooth communication with LYWSD02 devices
 
 ## Installation
@@ -67,8 +75,8 @@ Before installing and running the application, ensure that your system meets the
 2. **Create a Virtual Environment (Optional but Recommended)**
 
    ```bash
-   python3 -m venv venv
-   source venv/bin/activate  # On Windows: venv\Scripts\activate
+   python3 -m venv .venv
+   source .venv/bin/activate  # On Windows: .venv\Scripts\activate
    ```
 
 3. **Install Dependencies**
@@ -89,7 +97,7 @@ Before installing and running the application, ensure that your system meets the
 4. **Run the Application**
 
    ```bash
-   python lywsd02_updater.py
+   python main.py
    ```
 
 ## Usage
@@ -199,3 +207,11 @@ Please ensure that your contributions adhere to the project's coding standards a
 
 This project is licensed under the [MIT License](LICENSE).
 
+
+## Verification
+
+Run `python -m unittest discover -s tests -v` for the hardware-free target-configuration and device-selection checks.
+
+With Tkinter and the dependencies installed, run `python verify-runtime.py` for three simulated scan/result cycles using a real Tk mainloop. The script checks that GUI logging and scan coroutines stay on the main thread, verifies filtered device selection, and closes cleanly. It performs no Bluetooth access or clock writes.
+
+On macOS, Bluetooth permission belongs to the application launching Python (for example, Terminal). If scanning reports an authorization error, inspect that application's existing Bluetooth permission in System Settings. This utility does not grant permissions.
